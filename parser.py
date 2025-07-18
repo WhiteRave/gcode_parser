@@ -2,14 +2,15 @@ import tkinter as tk
 from tkinter import scrolledtext, filedialog, messagebox, ttk
 import os
 from tkinter import font as tkfont
+import pyperclip
 
 
 class GCodeParserTk:
     def __init__(self, root):
         self.root = root
         self.root.title("G-code to Rapid Converter")
-        self.root.geometry("800x700")
-        self.root.minsize(800, 700)
+        self.root.geometry("800x725")
+        self.root.minsize(600, 700)
 
         # Настройка стилей
         self.setup_styles()
@@ -32,8 +33,8 @@ class GCodeParserTk:
 
         self.gcode_edit = scrolledtext.ScrolledText(
             self.gcode_frame,
-            width=100,
-            height=15,
+            width=60,
+            height=10,
             font=('Consolas', 10),
             padx=5,
             pady=5,
@@ -54,11 +55,12 @@ class GCodeParserTk:
         self.right_column = ttk.Frame(self.settings_frame)
         self.right_column.pack(side=tk.LEFT, padx=5, fill=tk.BOTH, expand=True)
 
-        # Поля ввода (уменьшенная ширина)
-        self.create_labeled_entry(self.left_column, "Название процедуры:", "main", 0, width=20)
-        self.create_labeled_entry(self.left_column, "Точка отсчёта:", "defaultPoint", 1, width=20)
-        self.create_labeled_entry(self.right_column, "Инструмент:", "tool0", 0, width=20)
-        self.create_labeled_entry(self.right_column, "Система координат:", "wobj0", 1, width=20)
+        # Поля ввода
+        self.create_labeled_entry(self.left_column, "Название процедуры:", "main", 0)
+        self.create_labeled_entry(self.left_column, "Точка отсчёта:", "defaultPoint", 1)
+        self.create_labeled_entry(self.left_column, "I/O сигнал:", "Spindle", 2)
+        self.create_labeled_entry(self.right_column, "Инструмент:", "tool0", 0)
+        self.create_labeled_entry(self.right_column, "Система координат:", "wobj0", 1)
 
         # Панель кнопок
         self.button_frame = ttk.Frame(self.main_frame)
@@ -85,14 +87,33 @@ class GCodeParserTk:
         )
         self.clear_btn.pack(side=tk.LEFT, padx=5)
 
-        # Панель результатов
-        self.result_frame = ttk.LabelFrame(self.main_frame, text=" Результат преобразования ", padding=10)
+        # Панель результатов с кнопкой копирования в заголовке
+        self.result_frame = ttk.LabelFrame(self.main_frame, padding=10)
         self.result_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Заголовок панели результатов с кнопкой копирования
+        self.result_header = ttk.Frame(self.result_frame)
+        self.result_header.pack(fill=tk.X)
+
+        ttk.Label(
+            self.result_header,
+            text="Результат преобразования",
+            font=('Helvetica', 10)
+        ).pack(side=tk.LEFT)
+
+        # Кнопка копирования (иконка 📋)
+        self.copy_btn = ttk.Button(
+            self.result_header,
+            text="📋",
+            command=self.copy_to_clipboard,
+            width=3
+        )
+        self.copy_btn.pack(side=tk.RIGHT, padx=5)
 
         self.result_edit = scrolledtext.ScrolledText(
             self.result_frame,
-            width=100,
-            height=15,
+            width=60,
+            height=10,
             font=('Consolas', 10),
             padx=5,
             pady=5,
@@ -120,7 +141,6 @@ class GCodeParserTk:
         style = ttk.Style()
         style.theme_use('clam')
 
-        # Настройка скруглённых углов
         style.configure('TFrame', background='#f5f5f5')
         style.configure('TLabel', background='#f5f5f5')
         style.configure('TButton', padding=6, relief='flat', bordercolor='#ccc', borderwidth=1)
@@ -128,37 +148,43 @@ class GCodeParserTk:
                   background=[('active', '#e6e6e6')],
                   bordercolor=[('active', '#adadad')])
 
-        # Скруглённые углы для LabelFrame
         style.configure('TLabelframe', background='#f5f5f5', bordercolor='#ccc', borderwidth=1)
         style.configure('TLabelframe.Label', background='#f5f5f5')
-
-        # Стиль для Entry
         style.configure('TEntry', fieldbackground='white', bordercolor='#ccc', borderwidth=1, padding=5)
 
-        # Шрифты
         default_font = tkfont.nametofont("TkDefaultFont")
         default_font.configure(size=10)
 
-    def create_labeled_entry(self, parent, label_text, default_value, pady_top, width=20):
+    def create_labeled_entry(self, parent, label_text, default_value, pady_top):
         frame = ttk.Frame(parent)
         frame.pack(fill=tk.X, pady=(pady_top * 10, 0))
 
-        label = ttk.Label(frame, text=label_text, width=width, anchor=tk.W)
+        label = ttk.Label(frame, text=label_text, width=20, anchor=tk.W)
         label.pack(side=tk.LEFT)
 
-        entry = ttk.Entry(frame)
+        entry = ttk.Entry(frame, width=15)
         entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
         entry.insert(0, default_value)
 
-        # Сохраняем ссылки на важные поля
         if label_text == "Название процедуры:":
             self.proc_entry = entry
         elif label_text == "Точка отсчёта:":
             self.ref_entry = entry
+        elif label_text == "I/O сигнал:":
+            self.io_signal_entry = entry
         elif label_text == "Инструмент:":
             self.tool_entry = entry
         elif label_text == "Система координат:":
             self.wobj_entry = entry
+
+    def copy_to_clipboard(self):
+        """Копирует содержимое поля результата в буфер обмена"""
+        content = self.result_edit.get("1.0", tk.END)
+        if content.strip():
+            pyperclip.copy(content)
+            self.status_bar.config(text="Текст скопирован в буфер обмена")
+        else:
+            self.status_bar.config(text="Нет данных для копирования")
 
     def load_file(self):
         filename = filedialog.askopenfilename(
@@ -184,11 +210,12 @@ class GCodeParserTk:
 
         proc_name = self.proc_entry.get()
         ref_point = self.ref_entry.get()
+        io_signal = self.io_signal_entry.get()
         tool = self.tool_entry.get()
         wobj = self.wobj_entry.get()
 
         try:
-            rapid_code = self.convert_to_rapid(gcode, proc_name, ref_point, tool, wobj)
+            rapid_code = self.convert_to_rapid(gcode, proc_name, ref_point, io_signal, tool, wobj)
             self.result_edit.config(state='normal')
             self.result_edit.delete(1.0, tk.END)
             self.result_edit.insert(tk.END, rapid_code)
@@ -200,7 +227,7 @@ class GCodeParserTk:
             messagebox.showerror("Ошибка", f"Ошибка конвертации:\n{str(e)}")
             self.status_bar.config(text="Ошибка конвертации")
 
-    def convert_to_rapid(self, gcode, proc_name, ref_point, tool, wobj):
+    def convert_to_rapid(self, gcode, proc_name, ref_point, io_signal, tool, wobj):
         lines = gcode.split('\n')
         rapid_commands = []
         last_coords = {'X': 0.0, 'Y': 0.0, 'Z': 0.0}
@@ -218,7 +245,15 @@ class GCodeParserTk:
             if line[0] == 'N' and line[1].isdigit():
                 line = line.split(' ', 1)[-1].strip()
 
-            if line.startswith(('G90', 'G71', 'M05', 'M03', 'M02', 'M30')):
+            if "M05" in line:
+                rapid_commands.append(f"  SetDO {io_signal}, false")
+                continue
+
+            if "M03" in line:
+                rapid_commands.append(f"  SetDO {io_signal}, true")
+                continue
+
+            if line.startswith(('G90', 'G71', 'M02', 'M30')):
                 continue
 
             if line.startswith(('G00', 'G01', 'G0 ', 'G1 ', 'G02', 'G03', 'G2 ', 'G3 ')) or \
@@ -277,6 +312,8 @@ class GCodeParserTk:
         self.proc_entry.insert(0, "main")
         self.ref_entry.delete(0, tk.END)
         self.ref_entry.insert(0, "defaultPoint")
+        self.io_signal_entry.delete(0, tk.END)
+        self.io_signal_entry.insert(0, "Spindle")
         self.tool_entry.delete(0, tk.END)
         self.tool_entry.insert(0, "tool0")
         self.wobj_entry.delete(0, tk.END)
