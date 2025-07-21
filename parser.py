@@ -34,7 +34,7 @@ class GCodeParserTk:
         self.gcode_edit = scrolledtext.ScrolledText(
             self.gcode_frame,
             width=60,
-            height=10,
+            height=15,
             font=('Consolas', 10),
             padx=5,
             pady=5,
@@ -87,7 +87,7 @@ class GCodeParserTk:
         )
         self.clear_btn.pack(side=tk.LEFT, padx=5)
 
-        # Панель результатов с кнопкой копирования в заголовке
+        # Панель результатов с кнопкой копирования
         self.result_frame = ttk.LabelFrame(self.main_frame, padding=10)
         self.result_frame.pack(fill=tk.BOTH, expand=True)
 
@@ -101,19 +101,18 @@ class GCodeParserTk:
             font=('Helvetica', 10)
         ).pack(side=tk.LEFT)
 
-        # Кнопка копирования (иконка 📋)
         self.copy_btn = ttk.Button(
             self.result_header,
-            text="📋",
+            text="📋 Копировать",
             command=self.copy_to_clipboard,
-            width=3
+            width=10
         )
         self.copy_btn.pack(side=tk.RIGHT, padx=5)
 
         self.result_edit = scrolledtext.ScrolledText(
             self.result_frame,
             width=60,
-            height=10,
+            height=15,
             font=('Consolas', 10),
             padx=5,
             pady=5,
@@ -136,6 +135,8 @@ class GCodeParserTk:
         # Переменные состояния
         self.source_file_path = ""
         self.last_rapid_command = ""
+        self.last_point = {'X': 0.0, 'Y': 0.0, 'Z': 0.0}
+        self.prev_circle_point = None  # Для хранения предыдущей точки дуги
 
     def setup_styles(self):
         style = ttk.Style()
@@ -230,48 +231,60 @@ class GCodeParserTk:
     def convert_to_rapid(self, gcode, proc_name, ref_point, io_signal, tool, wobj):
         lines = gcode.split('\n')
         rapid_commands = []
-        last_coords = {'X': 0.0, 'Y': 0.0, 'Z': 0.0}
+        self.last_point = {'X': 0.0, 'Y': 0.0, 'Z': 0.0}
         self.last_rapid_command = ""
-
+        self.prev_circle_point = None
         wobj_str = f",{wobj}" if wobj != "wobj0" else ""
 
         rapid_commands.append(f"GLOBAL PROC {proc_name}()")
 
-        for line in lines:
-            line = line.strip()
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
             if not line:
+                i += 1
                 continue
 
+            # Удаляем номер строки (если есть)
             if line[0] == 'N' and line[1].isdigit():
                 line = line.split(' ', 1)[-1].strip()
 
-            if "M05" in line:
+            # Обработка M05 (выключение)
+            if "M05" in line or "M5" in line:
                 rapid_commands.append(f"  SetDO {io_signal}, false")
+                i += 1
                 continue
 
-            if "M03" in line:
+            # Обработка M03 (включение)
+            if "M03" in line or "M3" in line:
                 rapid_commands.append(f"  SetDO {io_signal}, true")
+                i += 1
                 continue
 
+            # Пропускаем другие M-коды
             if line.startswith(('G90', 'G71', 'M02', 'M30')):
+                i += 1
                 continue
 
+            # Обрабатываем команды перемещения
             if line.startswith(('G00', 'G01', 'G0 ', 'G1 ', 'G02', 'G03', 'G2 ', 'G3 ')) or \
                     any(c in line for c in ['X', 'Y', 'Z']):
 
-                parts = line.split()
+                # Парсим параметры команды
+                params = {}
+                for part in line.split():
+                    if part.startswith(('X', 'Y', 'Z')):
+                        params[part[0]] = float(part[1:])
 
-                for part in parts:
-                    if part.startswith('X'):
-                        last_coords['X'] = float(part[1:])
-                    elif part.startswith('Y'):
-                        last_coords['Y'] = float(part[1:])
-                    elif part.startswith('Z'):
-                        last_coords['Z'] = float(part[1:])
+                # Обновляем текущую позицию
+                for axis in ['X', 'Y', 'Z']:
+                    if axis in params:
+                        self.last_point[axis] = params[axis]
 
-                x = last_coords['X'] / 10
-                y = last_coords['Y'] / 10
-                z = -last_coords['Z'] / 10
+                # Преобразуем координаты
+                x = self.last_point['X']
+                y = self.last_point['Y']
+                z = -self.last_point['Z'] # Инверсия Z
 
                 def format_coord(coord):
                     s = f"{coord:.4f}".rstrip('0').rstrip('.') if '.' in f"{coord:.4f}" else f"{coord}"
@@ -281,11 +294,35 @@ class GCodeParserTk:
                 y_str = format_coord(y)
                 z_str = format_coord(z)
 
-                current_cmd = f"  MoveL Offs({ref_point},{x_str},{y_str},{z_str}),v1000,fine,{tool}{wobj_str}"
+                # Обработка круговой интерполяции (G02/G03)
+                if line.startswith(('G02', 'G03', 'G2 ', 'G3 ')):
+                    if self.prev_circle_point is None:
+                        # Сохраняем первую точку дуги
+                        self.prev_circle_point = {
+                            'X': x_str,
+                            'Y': y_str,
+                            'Z': z_str
+                        }
+                        i += 1
+                    else:
+                        # Формируем команду MoveC из двух точек
+                        start_point = f"Offs({ref_point},{self.prev_circle_point['X']},{self.prev_circle_point['Y']},{self.prev_circle_point['Z']})"
+                        end_point = f"Offs({ref_point},{x_str},{y_str},{z_str})"
 
-                if current_cmd != self.last_rapid_command:
-                    rapid_commands.append(current_cmd)
-                    self.last_rapid_command = current_cmd
+                        current_cmd = f"  MoveC {start_point},{end_point},v200,fine,{tool}{wobj_str}"
+                        rapid_commands.append(current_cmd)
+                        self.prev_circle_point = None
+                        i += 1
+                else:
+                    # Линейное перемещение
+                    current_cmd = f"  MoveL Offs({ref_point},{x_str},{y_str},{z_str}),v1000,fine,{tool}{wobj_str}"
+
+                    if current_cmd != self.last_rapid_command:
+                        rapid_commands.append(current_cmd)
+                        self.last_rapid_command = current_cmd
+                    i += 1
+            else:
+                i += 1
 
         rapid_commands.append("ENDPROC")
         rapid_commands.append("")
@@ -324,6 +361,8 @@ class GCodeParserTk:
         self.result_edit.config(state='disabled')
         self.source_file_path = ""
         self.last_rapid_command = ""
+        self.last_point = {'X': 0.0, 'Y': 0.0, 'Z': 0.0}
+        self.prev_circle_point = None
         self.status_bar.config(text="Готов к работе")
 
 
