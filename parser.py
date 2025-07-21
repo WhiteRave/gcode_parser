@@ -3,6 +3,7 @@ from tkinter import scrolledtext, filedialog, messagebox, ttk
 import os
 from tkinter import font as tkfont
 import pyperclip
+import re
 
 
 class GCodeParserTk:
@@ -136,7 +137,7 @@ class GCodeParserTk:
         self.source_file_path = ""
         self.last_rapid_command = ""
         self.last_point = {'X': 0.0, 'Y': 0.0, 'Z': 0.0}
-        self.prev_circle_point = None  # Для хранения предыдущей точки дуги
+        self.prev_circle_point = None
 
     def setup_styles(self):
         style = ttk.Style()
@@ -228,6 +229,28 @@ class GCodeParserTk:
             messagebox.showerror("Ошибка", f"Ошибка конвертации:\n{str(e)}")
             self.status_bar.config(text="Ошибка конвертации")
 
+    def parse_gcode_line(self, line):
+        """Разбирает строку G-кода, разделяя команды даже без пробелов"""
+        # Удаляем номер строки (если есть)
+        if line[0] == 'N' and line[1].isdigit():
+            line = line.split(' ', 1)[-1].strip()
+
+        # Используем регулярное выражение для разделения команд
+        pattern = r'([A-Z][-+]?\d*\.?\d*)'
+        parts = re.findall(pattern, line)
+
+        # Разделяем комбинированные команды (например "G1X10" -> "G1", "X10")
+        commands = []
+        for part in parts:
+            # Ищем букву и следующие за ней цифры/знаки
+            match = re.match(r'([A-Z])([-+]?\d*\.?\d*)', part)
+            if match:
+                cmd = match.group(1)
+                value = match.group(2)
+                commands.append(f"{cmd}{value}" if value else cmd)
+
+        return commands
+
     def convert_to_rapid(self, gcode, proc_name, ref_point, io_signal, tool, wobj):
         lines = gcode.split('\n')
         rapid_commands = []
@@ -245,37 +268,44 @@ class GCodeParserTk:
                 i += 1
                 continue
 
-            # Удаляем номер строки (если есть)
-            if line[0] == 'N' and line[1].isdigit():
-                line = line.split(' ', 1)[-1].strip()
+            # Разбираем строку на отдельные команды
+            commands = self.parse_gcode_line(line)
 
             # Обработка M05 (выключение)
-            if "M05" in line or "M5" in line:
+            if "M05" in commands or "M5" in commands:
                 rapid_commands.append(f"  SetDO {io_signal}, false")
                 i += 1
                 continue
 
             # Обработка M03 (включение)
-            if "M03" in line or "M3" in line:
+            if "M03" in commands or "M3" in commands:
                 rapid_commands.append(f"  SetDO {io_signal}, true")
                 i += 1
                 continue
 
             # Пропускаем другие M-коды
-            if line.startswith(('G90', 'G71', 'M02', 'M30')):
+            if any(cmd in commands for cmd in ['G90', 'G71', 'M02', 'M30', 'G17']):
                 i += 1
                 continue
 
             # Обрабатываем команды перемещения
-            if line.startswith(('G00', 'G01', 'G0 ', 'G1 ', 'G02', 'G03', 'G2 ', 'G3 ')) or \
-                    any(c in line for c in ['X', 'Y', 'Z']):
+            move_cmd = None
+            params = {}
 
-                # Парсим параметры команды
-                params = {}
-                for part in line.split():
-                    if part.startswith(('X', 'Y', 'Z')):
-                        params[part[0]] = float(part[1:])
+            for cmd in commands:
+                if cmd.startswith(('G00', 'G01', 'G0', 'G1', 'G02', 'G03', 'G2', 'G3')):
+                    move_cmd = cmd
+                elif cmd[0] in ['X', 'Y', 'Z', 'I', 'J']:
+                    try:
+                        params[cmd[0]] = float(cmd[1:])
+                    except ValueError:
+                        pass
 
+            if not move_cmd and any(c in params for c in ['X', 'Y', 'Z']):
+                # Если нет явной G-команды, но есть координаты - предполагаем G1
+                move_cmd = 'G1'
+
+            if move_cmd:
                 # Обновляем текущую позицию
                 for axis in ['X', 'Y', 'Z']:
                     if axis in params:
@@ -284,7 +314,7 @@ class GCodeParserTk:
                 # Преобразуем координаты
                 x = self.last_point['X']
                 y = self.last_point['Y']
-                z = -self.last_point['Z'] # Инверсия Z
+                z = -self.last_point['Z']  # Инверсия Z
 
                 def format_coord(coord):
                     s = f"{coord:.4f}".rstrip('0').rstrip('.') if '.' in f"{coord:.4f}" else f"{coord}"
@@ -295,7 +325,7 @@ class GCodeParserTk:
                 z_str = format_coord(z)
 
                 # Обработка круговой интерполяции (G02/G03)
-                if line.startswith(('G02', 'G03', 'G2 ', 'G3 ')):
+                if move_cmd.startswith(('G02', 'G03', 'G2', 'G3')):
                     if self.prev_circle_point is None:
                         # Сохраняем первую точку дуги
                         self.prev_circle_point = {
