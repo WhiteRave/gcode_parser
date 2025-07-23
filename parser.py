@@ -1,17 +1,131 @@
 import tkinter as tk
-from tkinter import scrolledtext, filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 import os
 from tkinter import font as tkfont
 import pyperclip
 import re
 
 
+class TextLineNumbers(tk.Canvas):
+    def __init__(self, *args, **kwargs):
+        tk.Canvas.__init__(self, *args, **kwargs)
+        self.textwidget = None
+        self.count_label = None
+
+    def attach(self, text_widget, count_label):
+        self.textwidget = text_widget
+        self.count_label = count_label
+
+    def redraw(self, *args):
+        """Redraw line numbers"""
+        self.delete("all")
+
+        i = self.textwidget.index("@0,0")
+        while True:
+            dline = self.textwidget.dlineinfo(i)
+            if dline is None:
+                break
+            y = dline[1]
+            linenum = str(i).split(".")[0]
+            self.create_text(2, y, anchor="nw", text=linenum, font=('Consolas', 10))
+            i = self.textwidget.index("%s+1line" % i)
+
+        # Update line count
+        line_count = self.textwidget.get('1.0', 'end-1c').count('\n') + 1
+        self.count_label.config(text=f"Строк: {line_count}")
+
+
+class CustomText(tk.Text):
+    def __init__(self, *args, **kwargs):
+        tk.Text.__init__(self, *args, **kwargs)
+
+        # Стилизованный вертикальный скроллбар
+        self.yscroll = tk.Scrollbar(
+            self,
+            orient=tk.VERTICAL,
+            width=12,
+            bg='#f0f0f0',
+            activebackground='#a0a0a0',
+            troughcolor='#e0e0e0',
+            relief='flat',
+            bd=0,
+            highlightthickness=0
+        )
+
+        # Стилизованный горизонтальный скроллбар
+        self.xscroll = tk.Scrollbar(
+            self,
+            orient=tk.HORIZONTAL,
+            width=12,
+            bg='#f0f0f0',
+            activebackground='#a0a0a0',
+            troughcolor='#e0e0e0',
+            relief='flat',
+            bd=0,
+            highlightthickness=0
+        )
+
+        # Настройка команд прокрутки
+        self.config(
+            xscrollcommand=self._update_xscroll,
+            yscrollcommand=self._update_yscroll
+        )
+        self.xscroll.config(command=self.xview)
+        self.yscroll.config(command=self.yview)
+
+        # Create proxy for the actual widget
+        self._orig = self._w + "_orig"
+        self.tk.call("rename", self._w, self._orig)
+        self.tk.createcommand(self._w, self._proxy)
+
+    def _proxy(self, *args):
+        # Let the actual widget perform the requested action
+        cmd = (self._orig,) + args
+        try:
+            result = self.tk.call(cmd)
+        except:
+            return None
+
+        # Generate an event if something was added or deleted
+        if (args[0] in ("insert", "replace", "delete") or
+                args[0:3] == ("mark", "set", "insert") or
+                args[0:2] == ("xview", "moveto") or
+                args[0:2] == ("xview", "scroll") or
+                args[0:2] == ("yview", "moveto") or
+                args[0:2] == ("yview", "scroll")):
+            self.event_generate("<<Change>>", when="tail")
+
+        return result
+
+    def _update_xscroll(self, first, last):
+        # Показывать скроллбар только если текст шире видимой области
+        if float(first) <= 0.0 and float(last) >= 1.0:
+            self.xscroll.pack_forget()
+        else:
+            self.xscroll.pack(side=tk.BOTTOM, fill=tk.X)
+        return self.xscroll.set(first, last)
+
+    def _update_yscroll(self, first, last):
+        # Показывать скроллбар только если текст выше видимой области
+        if float(first) <= 0.0 and float(last) >= 1.0:
+            self.yscroll.pack_forget()
+        else:
+            self.yscroll.pack(side=tk.RIGHT, fill=tk.Y)
+        return self.yscroll.set(first, last)
+
+    def _check_scroll_needed(self, event=None):
+        # Принудительная проверка при изменении размера
+        self.update_idletasks()
+        self._update_xscroll(*self.xview())
+        self._update_yscroll(*self.yview())
+
+
 class GCodeParserTk:
     def __init__(self, root):
         self.root = root
         self.root.title("G-code to Rapid Converter")
-        self.root.geometry("800x725")
-        self.root.minsize(600, 700)
+        self.root.geometry("775x725")
+        self.root.minsize(775, 725)
 
         # Настройка стилей
         self.setup_styles()
@@ -26,27 +140,54 @@ class GCodeParserTk:
             text="Конвертер G-code в Rapid",
             font=('Helvetica', 14, 'bold')
         )
-        self.header.pack(pady=(0, 15))
+        self.header.pack(pady=(0, 10))
 
         # Панель с G-code
-        self.gcode_frame = ttk.LabelFrame(self.main_frame, text=" Исходный G-code ", padding=10)
+        self.gcode_frame = ttk.LabelFrame(self.main_frame, text=" Исходный G-code ", padding=5)
         self.gcode_frame.pack(fill=tk.BOTH, expand=True)
 
-        self.gcode_edit = scrolledtext.ScrolledText(
-            self.gcode_frame,
-            width=60,
-            height=15,
+        # Frame для текста и номеров строк
+        self.gcode_text_frame = ttk.Frame(self.gcode_frame)
+        self.gcode_text_frame.pack(fill=tk.BOTH, side=tk.LEFT)
+        self.gcode_text_frame.pack_propagate(False)
+        self.gcode_text_frame.config(width=675, height=200)
+
+        # Номера строк для G-code
+        self.gcode_linenumbers = TextLineNumbers(self.gcode_text_frame, width=30)
+        self.gcode_linenumbers.pack(side=tk.LEFT, fill=tk.Y)
+
+        # Текст G-code
+        self.gcode_edit = CustomText(
+            self.gcode_text_frame,
+            width=90,
+            height=5,
             font=('Consolas', 10),
             padx=5,
             pady=5,
-            wrap=tk.NONE
+            wrap=tk.NONE,
+            undo=True
         )
-        self.gcode_edit.pack(fill=tk.BOTH, expand=True)
-        self.gcode_edit.insert(tk.END, "Вставьте G-code здесь или загрузите файл...")
+        self.gcode_edit.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.gcode_edit.insert(tk.END, "Загрузите файл с g-code...")
+
+        # Счетчик строк G-code
+        self.gcode_count_frame = ttk.Frame(self.gcode_frame)
+        self.gcode_count_frame.pack(fill=tk.X, side=tk.BOTTOM)
+
+        self.gcode_line_count = ttk.Label(
+            self.gcode_count_frame,
+            text="Строк: 0",
+            font=('Helvetica', 8),
+            anchor=tk.E
+        )
+        self.gcode_line_count.pack(fill=tk.X, side=tk.RIGHT, padx=5)
+
+        # Привязка номеров строк к текстовому полю
+        self.gcode_linenumbers.attach(self.gcode_edit, self.gcode_line_count)
 
         # Панель настроек
         self.settings_frame = ttk.Frame(self.main_frame)
-        self.settings_frame.pack(fill=tk.X, pady=10)
+        self.settings_frame.pack(fill=tk.X, pady=5)
 
         # Левая колонка настроек
         self.left_column = ttk.Frame(self.settings_frame)
@@ -59,7 +200,7 @@ class GCodeParserTk:
         # Поля ввода
         self.create_labeled_entry(self.left_column, "Название процедуры:", "main", 0)
         self.create_labeled_entry(self.left_column, "Точка отсчёта:", "defaultPoint", 1)
-        self.create_labeled_entry(self.left_column, "I/O сигнал:", "Spindle", 2)
+        self.create_labeled_entry(self.left_column, "I/O сигнал:", "Spindle", 1)
         self.create_labeled_entry(self.right_column, "Инструмент:", "tool0", 0)
         self.create_labeled_entry(self.right_column, "Система координат:", "wobj0", 1)
 
@@ -88,40 +229,62 @@ class GCodeParserTk:
         )
         self.clear_btn.pack(side=tk.LEFT, padx=5)
 
-        # Панель результатов с кнопкой копирования
-        self.result_frame = ttk.LabelFrame(self.main_frame, padding=10)
+        # Панель результатов
+        self.result_frame = ttk.LabelFrame(self.main_frame, text="Результат преобразования", padding=10)
         self.result_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Заголовок панели результатов с кнопкой копирования
-        self.result_header = ttk.Frame(self.result_frame)
-        self.result_header.pack(fill=tk.X)
+        # Основной контейнер для текста и правой панели
+        self.result_main_frame = ttk.Frame(self.result_frame)
+        self.result_main_frame.pack(fill=tk.BOTH, expand=True)
 
-        ttk.Label(
-            self.result_header,
-            text="Результат преобразования",
-            font=('Helvetica', 10)
-        ).pack(side=tk.LEFT)
+        # Контейнер для текста и номеров строк
+        self.result_text_container = ttk.Frame(self.result_main_frame)
+        self.result_text_container.pack(side=tk.LEFT, fill=tk.BOTH)
+        self.result_text_container.pack_propagate(False)
+        self.result_text_container.config(width=675, height=200)
 
-        self.copy_btn = ttk.Button(
-            self.result_header,
-            text="📋 Копировать",
-            command=self.copy_to_clipboard,
-            width=10
-        )
-        self.copy_btn.pack(side=tk.RIGHT, padx=5)
+        # Номера строк для результата
+        self.result_linenumbers = TextLineNumbers(self.result_text_container, width=30)
+        self.result_linenumbers.pack(side=tk.LEFT, fill=tk.Y)
 
-        self.result_edit = scrolledtext.ScrolledText(
-            self.result_frame,
-            width=60,
+        # Текст результата
+        self.result_edit = CustomText(
+            self.result_text_container,
+            width=90,
             height=15,
             font=('Consolas', 10),
             padx=5,
             pady=5,
             wrap=tk.NONE,
-            state='disabled'
+            undo=True
         )
-        self.result_edit.pack(fill=tk.BOTH, expand=True)
+        self.result_edit.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.result_edit.insert(tk.END, "Здесь будет отображен Rapid код...")
+
+        # Правая панель с кнопкой и счетчиком
+        self.result_right_panel = ttk.Frame(self.result_main_frame, width=80)
+        self.result_right_panel.pack(side=tk.RIGHT, fill=tk.Y, padx=(5, 0))
+
+        # Кнопка копирования (вверху справа)
+        self.copy_btn = ttk.Button(
+            self.result_right_panel,
+            text="📋",
+            command=self.copy_to_clipboard,
+            width=3
+        )
+        self.copy_btn.pack(side=tk.TOP, pady=(0, 5))
+
+        # Счетчик строк (внизу справа)
+        self.result_line_count = ttk.Label(
+            self.result_right_panel,
+            text="Строк: 0",
+            font=('Helvetica', 8),
+            anchor=tk.E
+        )
+        self.result_line_count.pack(side=tk.BOTTOM, fill=tk.X)
+
+        # Привязка номеров строк к текстовому полю результата
+        self.result_linenumbers.attach(self.result_edit, self.result_line_count)
 
         # Статус бар
         self.status_bar = ttk.Label(
@@ -138,6 +301,16 @@ class GCodeParserTk:
         self.last_rapid_command = ""
         self.last_point = {'X': 0.0, 'Y': 0.0, 'Z': 0.0}
         self.prev_circle_point = None
+
+        # Привязка событий для обновления номеров строк
+        self.gcode_edit.bind("<<Change>>", self._on_gcode_change)
+        self.result_edit.bind("<<Change>>", self._on_result_change)
+
+    def _on_gcode_change(self, event=None):
+        self.gcode_linenumbers.redraw()
+
+    def _on_result_change(self, event=None):
+        self.result_linenumbers.redraw()
 
     def setup_styles(self):
         style = ttk.Style()
@@ -159,9 +332,9 @@ class GCodeParserTk:
 
     def create_labeled_entry(self, parent, label_text, default_value, pady_top):
         frame = ttk.Frame(parent)
-        frame.pack(fill=tk.X, pady=(pady_top * 10, 0))
+        frame.pack(fill=tk.X, pady=(pady_top * 5, 0))
 
-        label = ttk.Label(frame, text=label_text, width=20, anchor=tk.W)
+        label = ttk.Label(frame, text=label_text, width=19, anchor=tk.W)
         label.pack(side=tk.LEFT)
 
         entry = ttk.Entry(frame, width=15)
