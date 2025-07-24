@@ -4,6 +4,10 @@ import os
 from tkinter import font as tkfont
 import pyperclip
 import re
+import time
+from tkinter import Canvas
+from math import cos, sin, radians
+import numpy as np
 
 
 class TextLineNumbers(tk.Canvas):
@@ -124,26 +128,39 @@ class GCodeParserTk:
     def __init__(self, root):
         self.root = root
         self.root.title("G-code to Rapid Converter")
-        self.root.geometry("775x725")
-        self.root.minsize(775, 725)
 
-        # Настройка стилей
-        self.setup_styles()
+        # Получаем размеры экрана
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
+        self.root.geometry(f"{int(screen_width * 0.9)}x{int(screen_height * 0.8)}")
 
-        # Основной контейнер
-        self.main_frame = ttk.Frame(root, padding="10")
-        self.main_frame.pack(fill=tk.BOTH, expand=True)
+        # Основной контейнер с разделением на две части
+        self.main_paned = ttk.PanedWindow(root, orient=tk.HORIZONTAL)
+        self.main_paned.pack(fill=tk.BOTH, expand=True)
 
-        # Заголовок
+        # ЛЕВАЯ ЧАСТЬ (исходные данные, настройки и результат)
+        self.left_frame = ttk.Frame(self.main_paned)
+        self.main_paned.add(self.left_frame, weight=1)
+
+        # ПРАВАЯ ЧАСТЬ (симуляция)
+        self.right_frame = ttk.Frame(self.main_paned)
+        self.main_paned.add(self.right_frame, weight=200)
+
+        # --- ЛЕВАЯ ЧАСТЬ ---
+        # Контейнер для всех левых элементов
+        self.left_content = ttk.Frame(self.left_frame, padding="10")
+        self.left_content.pack(fill=tk.BOTH, expand=True)
+
+        # Заголовок (перенесен в левую часть)
         self.header = ttk.Label(
-            self.main_frame,
+            self.left_content,
             text="Конвертер G-code в Rapid",
             font=('Helvetica', 14, 'bold')
         )
         self.header.pack(pady=(0, 10))
 
-        # Панель с G-code
-        self.gcode_frame = ttk.LabelFrame(self.main_frame, text=" Исходный G-code ", padding=5)
+        # Панель с G-code (перенесена в левую часть)
+        self.gcode_frame = ttk.LabelFrame(self.left_content, text=" Исходный G-code ", padding=5)
         self.gcode_frame.pack(fill=tk.BOTH, expand=True)
 
         # Frame для текста и номеров строк
@@ -186,7 +203,7 @@ class GCodeParserTk:
         self.gcode_linenumbers.attach(self.gcode_edit, self.gcode_line_count)
 
         # Панель настроек
-        self.settings_frame = ttk.Frame(self.main_frame)
+        self.settings_frame = ttk.Frame(self.left_content)
         self.settings_frame.pack(fill=tk.X, pady=5)
 
         # Левая колонка настроек
@@ -203,9 +220,12 @@ class GCodeParserTk:
         self.create_labeled_entry(self.left_column, "I/O сигнал:", "Spindle", 1)
         self.create_labeled_entry(self.right_column, "Инструмент:", "tool0", 0)
         self.create_labeled_entry(self.right_column, "Система координат:", "wobj0", 1)
+        self.create_labeled_entry(self.right_column, "Граница X:", "100", 1)
+        self.create_labeled_entry(self.left_column, "Граница Y:", "100", 1)
+        self.create_labeled_entry(self.right_column, "Граница Z:", "100", 1)
 
         # Панель кнопок
-        self.button_frame = ttk.Frame(self.main_frame)
+        self.button_frame = ttk.Frame(self.left_content)
         self.button_frame.pack(fill=tk.X, pady=5)
 
         self.load_btn = ttk.Button(
@@ -230,7 +250,7 @@ class GCodeParserTk:
         self.clear_btn.pack(side=tk.LEFT, padx=5)
 
         # Панель результатов
-        self.result_frame = ttk.LabelFrame(self.main_frame, text="Результат преобразования", padding=10)
+        self.result_frame = ttk.LabelFrame(self.left_content, text="Результат преобразования", padding=5)
         self.result_frame.pack(fill=tk.BOTH, expand=True)
 
         # Основной контейнер для текста и правой панели
@@ -251,7 +271,7 @@ class GCodeParserTk:
         self.result_edit = CustomText(
             self.result_text_container,
             width=90,
-            height=15,
+            height=5,
             font=('Consolas', 10),
             padx=5,
             pady=5,
@@ -262,7 +282,7 @@ class GCodeParserTk:
         self.result_edit.insert(tk.END, "Здесь будет отображен Rapid код...")
 
         # Правая панель с кнопкой и счетчиком
-        self.result_right_panel = ttk.Frame(self.result_main_frame, width=80)
+        self.result_right_panel = ttk.Frame(self.result_main_frame, width=10)
         self.result_right_panel.pack(side=tk.RIGHT, fill=tk.Y, padx=(5, 0))
 
         # Кнопка копирования (вверху справа)
@@ -288,7 +308,7 @@ class GCodeParserTk:
 
         # Статус бар
         self.status_bar = ttk.Label(
-            self.main_frame,
+            self.left_frame,
             text="Готов к работе",
             relief=tk.SUNKEN,
             anchor=tk.W,
@@ -305,6 +325,9 @@ class GCodeParserTk:
         # Привязка событий для обновления номеров строк
         self.gcode_edit.bind("<<Change>>", self._on_gcode_change)
         self.result_edit.bind("<<Change>>", self._on_result_change)
+
+        # ПРАВАЯ ЧАСТЬ (Симуляция)
+
 
     def _on_gcode_change(self, event=None):
         self.gcode_linenumbers.redraw()
@@ -329,28 +352,6 @@ class GCodeParserTk:
 
         default_font = tkfont.nametofont("TkDefaultFont")
         default_font.configure(size=10)
-
-    def create_labeled_entry(self, parent, label_text, default_value, pady_top):
-        frame = ttk.Frame(parent)
-        frame.pack(fill=tk.X, pady=(pady_top * 5, 0))
-
-        label = ttk.Label(frame, text=label_text, width=19, anchor=tk.W)
-        label.pack(side=tk.LEFT)
-
-        entry = ttk.Entry(frame, width=15)
-        entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
-        entry.insert(0, default_value)
-
-        if label_text == "Название процедуры:":
-            self.proc_entry = entry
-        elif label_text == "Точка отсчёта:":
-            self.ref_entry = entry
-        elif label_text == "I/O сигнал:":
-            self.io_signal_entry = entry
-        elif label_text == "Инструмент:":
-            self.tool_entry = entry
-        elif label_text == "Система координат:":
-            self.wobj_entry = entry
 
     def copy_to_clipboard(self):
         """Копирует содержимое поля результата в буфер обмена"""
@@ -424,6 +425,34 @@ class GCodeParserTk:
 
         return commands
 
+    def create_labeled_entry(self, parent, label_text, default_value, pady_top):
+        frame = ttk.Frame(parent)
+        frame.pack(fill=tk.X, pady=(pady_top * 5, 0))
+
+        label = ttk.Label(frame, text=label_text, width=19, anchor=tk.W)
+        label.pack(side=tk.LEFT)
+
+        entry = ttk.Entry(frame, width=15)
+        entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
+        entry.insert(0, default_value)
+
+        if label_text == "Название процедуры:":
+            self.proc_entry = entry
+        elif label_text == "Точка отсчёта:":
+            self.ref_entry = entry
+        elif label_text == "I/O сигнал:":
+            self.io_signal_entry = entry
+        elif label_text == "Инструмент:":
+            self.tool_entry = entry
+        elif label_text == "Система координат:":
+            self.wobj_entry = entry
+        elif label_text == "Граница X:":
+            self.x_limit_entry = entry
+        elif label_text == "Граница Y:":
+            self.y_limit_entry = entry
+        elif label_text == "Граница Z:":
+            self.z_limit_entry = entry
+
     def convert_to_rapid(self, gcode, proc_name, ref_point, io_signal, tool, wobj):
         lines = gcode.split('\n')
         rapid_commands = []
@@ -431,6 +460,17 @@ class GCodeParserTk:
         self.last_rapid_command = ""
         self.prev_circle_point = None
         wobj_str = f",{wobj}" if wobj != "wobj0" else ""
+
+        # Получаем границы из полей ввода
+        try:
+            x_limit = float(self.x_limit_entry.get())
+            y_limit = float(self.y_limit_entry.get())
+            z_limit = float(self.z_limit_entry.get())
+        except ValueError:
+            messagebox.showerror("Ошибка", "Некорректные значения границ!")
+            return ""
+
+        out_of_bounds = False
 
         rapid_commands.append(f"GLOBAL PROC {proc_name}()")
 
@@ -441,7 +481,6 @@ class GCodeParserTk:
                 i += 1
                 continue
 
-            # Разбираем строку на отдельные команды
             commands = self.parse_gcode_line(line)
 
             # Обработка M05 (выключение)
@@ -475,14 +514,30 @@ class GCodeParserTk:
                         pass
 
             if not move_cmd and any(c in params for c in ['X', 'Y', 'Z']):
-                # Если нет явной G-команды, но есть координаты - предполагаем G1
                 move_cmd = 'G1'
 
             if move_cmd:
-                # Обновляем текущую позицию
+                # Проверяем границы координат
                 for axis in ['X', 'Y', 'Z']:
                     if axis in params:
+                        if axis == 'X' and abs(params[axis]) > x_limit:
+                            messagebox.showwarning("Предупреждение",
+                                                   f"Координата X={params[axis]} выходит за границы ±{x_limit}!")
+                            out_of_bounds = True
+                        elif axis == 'Y' and abs(params[axis]) > y_limit:
+                            messagebox.showwarning("Предупреждение",
+                                                   f"Координата Y={params[axis]} выходит за границы ±{y_limit}!")
+                            out_of_bounds = True
+                        elif axis == 'Z' and abs(params[axis]) > z_limit:
+                            messagebox.showwarning("Предупреждение",
+                                                   f"Координата Z={params[axis]} выходит за границы ±{z_limit}!")
+                            out_of_bounds = True
+
                         self.last_point[axis] = params[axis]
+
+                # Если есть выход за границы - прерываем конвертацию
+                if out_of_bounds:
+                    return ""
 
                 # Преобразуем координаты
                 x = self.last_point['X']
@@ -530,9 +585,14 @@ class GCodeParserTk:
         rapid_commands.append("ENDPROC")
         rapid_commands.append("")
 
-        return '\n'.join(rapid_commands)
+        return '\n'.join(rapid_commands) if not out_of_bounds else ""
 
     def save_rapid_file(self, rapid_code, proc_name):
+        # Не сохраняем файл если rapid_code пустой (был выход за границы)
+        if not rapid_code.strip():
+            self.status_bar.config(text="Файл не сохранен: выход за границы координат")
+            return
+
         if not self.source_file_path:
             save_path = os.path.join(os.getcwd(), f"{proc_name}.txt")
         else:
@@ -545,6 +605,20 @@ class GCodeParserTk:
             messagebox.showinfo("Успех", f"Файл успешно сохранен:\n{save_path}")
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось сохранить файл:\n{str(e)}")
+
+    def parse_rapid_coordinates(self, rapid_code):
+        """Извлечение координат из Rapid кода"""
+        points = []
+        for line in rapid_code.split('\n'):
+            if "Offs(" in line:
+                # Извлекаем координаты из строк вида Offs(defaultPoint,X,Y,Z)
+                parts = line.split('Offs(')[1].split(')')[0].split(',')
+                ref_point = parts[0]
+                x = float(parts[1])
+                y = float(parts[2])
+                z = float(parts[3])
+                points.append({'X': x, 'Y': y, 'Z': z})
+        return points
 
     def clear_all(self):
         self.gcode_edit.delete(1.0, tk.END)
