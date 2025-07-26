@@ -8,6 +8,7 @@ import time
 from tkinter import Canvas
 from math import cos, sin, radians
 import numpy as np
+import threading
 
 
 class TextLineNumbers(tk.Canvas):
@@ -124,6 +125,233 @@ class CustomText(tk.Text):
         self._update_yscroll(*self.yview())
 
 
+class CustomScale(ttk.Frame):
+    def __init__(self, parent, from_=1, to=100, orient=tk.HORIZONTAL, command=None, **kwargs):
+        ttk.Frame.__init__(self, parent, **kwargs)
+        self.command = command
+        self.from_ = from_
+        self.to = to
+        self.orient = orient
+        self.value = from_
+
+        # Canvas для рисования шкалы
+        self.canvas = tk.Canvas(self, height=30, highlightthickness=0, width=340)
+        self.canvas.pack(side=tk.LEFT)
+
+        # Линия шкалы
+        self.line = self.canvas.create_line(8, 15, 292, 15, width=2, fill='#cccccc')
+
+        # Ползунок (кружочек)
+        self.slider = self.canvas.create_oval(16, 16, 16, 16, fill='#a0a0a0', outline='#a0a0a0', tags='slider')
+
+        # Текст значения (добавлено)
+        self.value_text = self.canvas.create_text(300, 15, text=f"{self.value}%", anchor=tk.W, fill='#333333')
+
+        # Привязка событий мыши
+        self.canvas.bind("<Button-1>", self.on_click)
+        self.canvas.bind("<B1-Motion>", self.on_drag)
+
+        # Начальное положение ползунка
+        self.update_slider()
+
+    def on_click(self, event):
+        self.update_value(event.x)
+
+    def on_drag(self, event):
+        self.update_value(event.x)
+
+    def update_value(self, x):
+        # Ограничиваем положение ползунка
+        x = max(8, min(x, 292))
+
+        # Вычисляем значение
+        self.value = int(self.from_ + (self.to - self.from_) * (x - 8) / (292 - 8))
+
+        # Обновляем положение ползунка и текст
+        self.update_slider()
+
+        # Вызываем команду, если она есть
+        if self.command:
+            self.command(self.value)
+
+    def update_slider(self):
+        # Вычисляем положение ползунка
+        x = 8 + (292 - 8) * (self.value - self.from_) / (self.to - self.from_)
+
+        # Перемещаем ползунок
+        self.canvas.coords(self.slider, x - 8, 7, x + 8, 23)
+
+        # Обновляем текст (изменено с itemconfig на delete и create)
+        self.canvas.delete(self.value_text)  # Удаляем старый текст
+        self.value_text = self.canvas.create_text(300, 15, text=f"{self.value}%",
+                                                  anchor=tk.W, fill='#333333')
+
+    def get(self):
+        return self.value
+
+    def set(self, value):
+        self.value = max(self.from_, min(value, self.to))
+        self.update_slider()
+
+
+class SimulationCanvas(tk.Canvas):
+    def __init__(self, parent, controller, *args, **kwargs):
+        tk.Canvas.__init__(self, parent, *args, **kwargs)
+        self.controller = controller
+        self.configure(bg='white', highlightthickness=0)
+
+        # Настройки визуализации
+        self.scale = 1.0
+        self.axis_color = '#888888'
+        self.path_color = '#0078D7'
+        self.current_pos_color = '#FF0000'
+        self.grid_step = 10  # Шаг сетки в пикселях
+
+        # Данные для симуляции
+        self.path_points = []
+        self.current_point_index = 0
+        self.is_playing = False
+        self.simulation_speed = 50
+        self.drawn_lines = []
+
+        # Привязка события изменения размера
+        self.bind("<Configure>", self.on_resize)
+
+    def on_resize(self, event=None):
+        """Обновляет положение осей при изменении размера окна"""
+        self.width = self.winfo_width()
+        self.height = self.winfo_height()
+        self.offset_x = self.width // 2
+        self.offset_y = self.height // 2
+        self.draw_axes()
+
+    def draw_axes(self):
+        """Рисует оси координат X и Y с подписями шкал"""
+        self.delete('axis')
+
+        # Ось X (красная) - горизонтальная линия по центру
+        self.create_line(0, self.offset_y, self.width, self.offset_y,
+                         fill='red', tags=('axis', 'x_axis'), width=2)
+
+        # Ось Y (зеленая) - вертикальная линия по центру
+        self.create_line(self.offset_x, 0, self.offset_x, self.height,
+                         fill='green', tags=('axis', 'y_axis'), width=2)
+
+        # Подписи осей
+        self.create_text(self.width - 40, self.offset_y - 20, text="X (10 мм)",
+                         fill='red', tags=('axis', 'x_label'), font=('Arial', 10, 'bold'))
+        self.create_text(self.offset_x + 40, 20, text="Y (10 мм)",
+                         fill='green', tags=('axis', 'y_label'), font=('Arial', 10, 'bold'))
+
+        # Шкала оси X с подписями
+        x_range = (self.width // 2) // self.grid_step
+        for i in range(-x_range, x_range + 1):
+            if i == 0:
+                continue
+
+            x_pos = self.offset_x + i * self.grid_step
+            # Деления оси X
+            self.create_line(x_pos, self.offset_y - 5, x_pos, self.offset_y + 5,
+                             fill='red', tags=('axis', 'x_ticks'))
+
+        # Шкала оси Y с подписями
+        y_range = (self.height // 2) // self.grid_step
+        for i in range(-y_range, y_range + 1):
+            if i == 0:
+                continue
+
+            y_pos = self.offset_y - i * self.grid_step
+            # Деления оси Y
+            self.create_line(self.offset_x - 5, y_pos, self.offset_x + 5, y_pos,
+                             fill='green', tags=('axis', 'y_ticks'))
+
+        # Подпись начала координат (0,0)
+        self.create_text(self.offset_x + 15, self.offset_y + 15, text="0",
+                         fill='black', tags=('axis', 'origin'), font=('Arial', 8))
+
+    def set_path_points(self, points):
+        """Устанавливает точки пути для симуляции"""
+        self.path_points = points
+        self.current_point_index = 0
+        self.drawn_lines = []
+
+    def update_simulation(self):
+        """Обновляет симуляцию, показывая текущую позицию"""
+        if not self.is_playing or not self.path_points:
+            return
+
+        if self.current_point_index < len(self.path_points):
+            point = self.path_points[self.current_point_index]
+            x = self.offset_x + point['X'] * self.scale
+            y = self.offset_y - point['Y'] * self.scale  # Инвертируем Y
+
+            # Удаляем предыдущую позицию
+            self.delete('current_pos')
+
+            # Рисуем текущую позицию
+            self.create_oval(x - 5, y - 5, x + 5, y + 5, fill=self.current_pos_color,
+                             outline=self.current_pos_color, tags='current_pos')
+
+            # Рисуем линию от предыдущей точки к текущей (если это не первая точка)
+            if self.current_point_index > 0:
+                prev_point = self.path_points[self.current_point_index - 1]
+                prev_x = self.offset_x + prev_point['X'] * self.scale
+                prev_y = self.offset_y - prev_point['Y'] * self.scale
+
+                line_id = self.create_line(prev_x, prev_y, x, y,
+                                           fill=self.path_color, width=2)
+                self.drawn_lines.append(line_id)
+
+            # Обновляем прогресс
+            progress = int(100 * self.current_point_index / len(self.path_points))
+            self.controller.progress_label.config(text=f"Прогресс: {progress}%")
+
+            # Обновляем координаты
+            self.controller.coord_label.config(
+                text=f"Текущая позиция: X: {point['X']:.2f}, Y: {point['Y']:.2f}, Z: {point['Z']:.2f}"
+            )
+
+            self.current_point_index += 1
+            self.after(self.simulation_speed, self.update_simulation)
+        else:
+            self.is_playing = False
+            self.controller.status_bar.config(text="Симуляция завершена")
+
+    def start_simulation(self):
+        """Запускает симуляцию"""
+        if not self.path_points:
+            return
+
+        # Очищаем canvas и рисуем заново оси
+        self.delete('all')
+        self.draw_axes()
+        self.drawn_lines = []
+
+        self.is_playing = True
+        self.current_point_index = 0
+        self.update_simulation()
+
+    def stop_simulation(self):
+        """Останавливает симуляцию"""
+        self.is_playing = False
+
+    def clear_simulation(self):
+        """Очищает симуляцию"""
+        self.stop_simulation()
+        self.path_points = []
+        self.current_point_index = 0
+        self.drawn_lines = []
+        self.delete('all')
+        self.draw_axes()
+        self.controller.coord_label.config(text="Текущая позиция: X: 0.00, Y: 0.00, Z: 0.00")
+        self.controller.progress_label.config(text="Прогресс: 0%")
+
+    def set_speed(self, speed):
+        """Устанавливает скорость симуляции (обратная величина)"""
+        self.simulation_speed = int(101 - speed)  # Преобразуем 1-100 в 100-1 мс
+        self.controller.speed_value_label.config(text=f"{self.simulation_speed} мс")
+
+
 class GCodeParserTk:
     def __init__(self, root):
         self.root = root
@@ -132,7 +360,8 @@ class GCodeParserTk:
         # Получаем размеры экрана
         screen_width = root.winfo_screenwidth()
         screen_height = root.winfo_screenheight()
-        self.root.geometry(f"{int(screen_width * 0.9)}x{int(screen_height * 0.8)}")
+        self.root.geometry(f"{screen_width}x{screen_height}+0+0")
+        self.root.state('zoomed')
 
         # Основной контейнер с разделением на две части
         self.main_paned = ttk.PanedWindow(root, orient=tk.HORIZONTAL)
@@ -326,8 +555,89 @@ class GCodeParserTk:
         self.gcode_edit.bind("<<Change>>", self._on_gcode_change)
         self.result_edit.bind("<<Change>>", self._on_result_change)
 
-        # ПРАВАЯ ЧАСТЬ (Симуляция)
+        # --- ПРАВАЯ ЧАСТЬ (Симуляция) ---
+        self.right_content = ttk.Frame(self.right_frame, padding="10")
+        self.right_content.pack(fill=tk.BOTH, expand=True)
 
+        # Заголовок симуляции
+        self.sim_header = ttk.Label(
+            self.right_content,
+            text="Симуляция пути инструмента",
+            font=('Helvetica', 14, 'bold')
+        )
+        self.sim_header.pack(pady=(0, 10))
+
+        # Canvas для симуляции
+        self.sim_canvas = SimulationCanvas(
+            self.right_content,
+            self,  # Передаем ссылку на главное окно
+            width=800,
+            height=500,
+            bg='white',
+            highlightthickness=1,
+            highlightbackground="#ccc"
+        )
+        self.sim_canvas.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+
+        # Панель управления симуляцией
+        self.sim_control_frame = ttk.Frame(self.right_content)
+        self.sim_control_frame.pack(fill=tk.X, pady=5)
+
+        # Кнопки управления
+        self.start_btn = ttk.Button(
+            self.sim_control_frame,
+            text="Старт",
+            command=self.start_simulation,
+            state=tk.DISABLED
+        )
+        self.start_btn.pack(side=tk.LEFT, padx=5)
+
+        self.stop_btn = ttk.Button(
+            self.sim_control_frame,
+            text="Стоп",
+            command=self.stop_simulation,
+            state=tk.DISABLED
+        )
+        self.stop_btn.pack(side=tk.LEFT, padx=5)
+
+        # Ползунок скорости
+        self.speed_label = ttk.Label(
+            self.sim_control_frame,
+            text="Скорость:",
+            font=('Helvetica', 9)
+        )
+        self.speed_label.pack(side=tk.LEFT, padx=(20, 5))
+
+        self.speed_slider = CustomScale(
+            self.sim_control_frame,
+            from_=1,
+            to=100,
+            command=self.set_simulation_speed
+        )
+        self.speed_slider.canvas.itemconfig(self.speed_slider.value_text, text="")
+        self.speed_slider.set(50)
+        self.speed_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+
+        # Информационная панель
+        self.sim_info_frame = ttk.Frame(self.right_content)
+        self.sim_info_frame.pack(fill=tk.X, pady=5)
+
+        self.coord_label = ttk.Label(
+            self.sim_info_frame,
+            text="Текущая позиция: X: 0.00, Y: 0.00, Z: 0.00",
+            font=('Helvetica', 9)
+        )
+        self.coord_label.pack(side=tk.LEFT)
+
+        self.progress_label = ttk.Label(
+            self.sim_info_frame,
+            text="Прогресс: 0%",
+            font=('Helvetica', 9)
+        )
+        self.progress_label.pack(side=tk.RIGHT)
+
+        # Инициализация стилей
+        self.setup_styles()
 
     def _on_gcode_change(self, event=None):
         self.gcode_linenumbers.redraw()
@@ -363,6 +673,10 @@ class GCodeParserTk:
             self.status_bar.config(text="Нет данных для копирования")
 
     def load_file(self):
+        self.sim_canvas.clear_simulation()
+        self.start_btn.config(state=tk.DISABLED)
+        self.stop_btn.config(state=tk.DISABLED)
+
         filename = filedialog.askopenfilename(
             filetypes=[("G-code Files", "*.nc *.gcode *.txt"), ("All Files", "*.*")],
             title="Выберите файл G-code"
@@ -397,8 +711,19 @@ class GCodeParserTk:
             self.result_edit.insert(tk.END, rapid_code)
             self.result_edit.config(state='disabled')
 
+            # Получаем точки для симуляции
+            sim_points = self.parse_rapid_coordinates(rapid_code)
+            if sim_points:
+                self.sim_canvas.set_path_points(sim_points)
+                self.start_btn.config(state=tk.NORMAL)
+                self.stop_btn.config(state=tk.NORMAL)
+                self.status_bar.config(text="Конвертация успешно завершена. Готово к симуляции.")
+            else:
+                self.start_btn.config(state=tk.DISABLED)
+                self.stop_btn.config(state=tk.DISABLED)
+                self.status_bar.config(text="Конвертация завершена, но нет данных для симуляции.")
+
             self.save_rapid_file(rapid_code, proc_name)
-            self.status_bar.config(text="Конвертация успешно завершена")
         except Exception as e:
             messagebox.showerror("Ошибка", f"Ошибка конвертации:\n{str(e)}")
             self.status_bar.config(text="Ошибка конвертации")
@@ -641,6 +966,37 @@ class GCodeParserTk:
         self.last_point = {'X': 0.0, 'Y': 0.0, 'Z': 0.0}
         self.prev_circle_point = None
         self.status_bar.config(text="Готов к работе")
+
+        # Очищаем симуляцию
+        self.sim_canvas.clear_simulation()
+        self.start_btn.config(state=tk.DISABLED)
+        self.stop_btn.config(state=tk.DISABLED)
+        self.coord_label.config(text="Текущая позиция: X: 0.00, Y: 0.00, Z: 0.00")
+        self.progress_label.config(text="Прогресс: 0%")
+
+    def start_simulation(self):
+        """Запускает симуляцию в отдельном потоке"""
+        if not self.sim_canvas.path_points:
+            return
+
+        self.sim_canvas.start_simulation()
+        self.start_btn.config(state=tk.DISABLED)  # Делаем кнопку "Старт" неактивной
+        self.stop_btn.config(state=tk.NORMAL)  # Делаем кнопку "Стоп" активной
+        self.status_bar.config(text="Симуляция запущена")
+
+    def stop_simulation(self):
+        """Останавливает симуляцию"""
+        self.sim_canvas.stop_simulation()
+        self.start_btn.config(state=tk.NORMAL)  # Делаем кнопку "Старт" активной
+        self.stop_btn.config(state=tk.DISABLED)  # Делаем кнопку "Стоп" неактивной
+        self.status_bar.config(text="Симуляция остановлена")
+
+    def set_simulation_speed(self, speed):
+        """Устанавливает скорость симуляции"""
+        self.sim_canvas.set_speed(speed)
+        # Отображаем значение в миллисекундах
+        self.speed_value_label.config(text=f"{101 - speed} мс")
+        self.status_bar.config(text=f"Скорость симуляции установлена: {speed}%")
 
 
 if __name__ == '__main__':
